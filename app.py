@@ -7,7 +7,7 @@ app = Flask(__name__)
 API_KEY = "YOUR_PLANTNET_API_KEY"
 
 # -----------------------
-# Database
+# DATABASE SETUP
 # -----------------------
 
 def init_db():
@@ -17,7 +17,7 @@ def init_db():
     cur.execute("""
     CREATE TABLE IF NOT EXISTS users(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT,
+        username TEXT UNIQUE,
         password TEXT
     )
     """)
@@ -28,7 +28,7 @@ def init_db():
 init_db()
 
 # -----------------------
-# Serve frontend
+# SERVE FRONTEND
 # -----------------------
 
 @app.route("/")
@@ -44,40 +44,52 @@ def js():
     return send_from_directory(".", "script.js")
 
 # -----------------------
-# Signup
+# SIGNUP
 # -----------------------
 
 @app.route("/signup", methods=["POST"])
 def signup():
 
-    data = request.json
-    username = data["username"]
-    password = data["password"]
+    data = request.get_json()
+
+    username = data.get("username")
+    password = data.get("password")
+
+    if not username or not password:
+        return jsonify({"message":"Username and password required"}),400
 
     conn = sqlite3.connect("users.db")
     cur = conn.cursor()
 
-    cur.execute(
-        "INSERT INTO users(username,password) VALUES (?,?)",
-        (username,password)
-    )
+    try:
 
-    conn.commit()
-    conn.close()
+        cur.execute(
+            "INSERT INTO users(username,password) VALUES (?,?)",
+            (username,password)
+        )
 
-    return jsonify({"message":"Signup successful"})
+        conn.commit()
+
+        return jsonify({"message":"Signup successful"})
+
+    except sqlite3.IntegrityError:
+        return jsonify({"message":"User already exists"})
+
+    finally:
+        conn.close()
 
 
 # -----------------------
-# Login
+# LOGIN
 # -----------------------
 
 @app.route("/login", methods=["POST"])
 def login():
 
-    data = request.json
-    username = data["username"]
-    password = data["password"]
+    data = request.get_json()
+
+    username = data.get("username")
+    password = data.get("password")
 
     conn = sqlite3.connect("users.db")
     cur = conn.cursor()
@@ -94,15 +106,18 @@ def login():
     if user:
         return jsonify({"message":"Login successful"})
     else:
-        return jsonify({"message":"Invalid credentials"}),401
+        return jsonify({"message":"Invalid username or password"}),401
 
 
 # -----------------------
-# Plant Identification
+# PLANT IDENTIFICATION
 # -----------------------
 
 @app.route("/identify", methods=["POST"])
 def identify():
+
+    if "image" not in request.files:
+        return jsonify({"error":"No image uploaded"})
 
     image = request.files["image"]
 
@@ -114,10 +129,10 @@ def identify():
 
     url = f"https://my-api.plantnet.org/v2/identify/all?api-key={API_KEY}"
 
-    response = requests.post(url, files=files, data=data)
-    result = response.json()
-
     try:
+
+        response = requests.post(url, files=files, data=data)
+        result = response.json()
 
         plant = result["results"][0]
 
@@ -132,14 +147,16 @@ Bark: Anti-inflammatory properties
 """
 
         return jsonify({
-            "scientific": scientific,
-            "description": description,
-            "uses": uses
+            "scientific":scientific,
+            "description":description,
+            "uses":uses
         })
 
     except:
         return jsonify({"error":"Plant not identified"})
 
+
+# -----------------------
 
 if __name__ == "__main__":
     app.run(debug=True)
