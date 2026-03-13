@@ -1,162 +1,135 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, session
 import sqlite3
 import requests
+import os
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
+app.secret_key = "medplantsecret"
 
-API_KEY = "YOUR_PLANTNET_API_KEY"
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# -----------------------
-# DATABASE SETUP
-# -----------------------
+PLANTNET_API_KEY = "YOUR_PLANTNET_API_KEY"
+
+# ---------------- DATABASE ----------------
 
 def init_db():
     conn = sqlite3.connect("users.db")
-    cur = conn.cursor()
-
-    cur.execute("""
+    c = conn.cursor()
+    c.execute("""
     CREATE TABLE IF NOT EXISTS users(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE,
         password TEXT
     )
     """)
-
     conn.commit()
     conn.close()
 
 init_db()
 
-# -----------------------
-# SERVE FRONTEND
-# -----------------------
+# ---------------- ROUTES ----------------
 
 @app.route("/")
 def home():
-    return send_from_directory(".", "index.html")
+    return render_template("index.html")
 
-@app.route("/style.css")
-def css():
-    return send_from_directory(".", "style.css")
 
-@app.route("/script.js")
-def js():
-    return send_from_directory(".", "script.js")
-
-# -----------------------
-# SIGNUP
-# -----------------------
+# ---------- SIGNUP ----------
 
 @app.route("/signup", methods=["POST"])
 def signup():
-
-    data = request.get_json()
-
-    username = data.get("username")
-    password = data.get("password")
-
-    if not username or not password:
-        return jsonify({"message":"Username and password required"}),400
+    data = request.json
+    username = data["username"]
+    password = data["password"]
 
     conn = sqlite3.connect("users.db")
-    cur = conn.cursor()
+    c = conn.cursor()
 
     try:
-
-        cur.execute(
-            "INSERT INTO users(username,password) VALUES (?,?)",
-            (username,password)
-        )
-
+        c.execute("INSERT INTO users(username,password) VALUES (?,?)",
+                  (username,password))
         conn.commit()
-
-        return jsonify({"message":"Signup successful"})
-
-    except sqlite3.IntegrityError:
-        return jsonify({"message":"User already exists"})
+        return jsonify({"status":"success"})
+    except:
+        return jsonify({"status":"exists"})
 
     finally:
         conn.close()
 
 
-# -----------------------
-# LOGIN
-# -----------------------
+# ---------- LOGIN ----------
 
 @app.route("/login", methods=["POST"])
 def login():
-
-    data = request.get_json()
-
-    username = data.get("username")
-    password = data.get("password")
+    data = request.json
+    username = data["username"]
+    password = data["password"]
 
     conn = sqlite3.connect("users.db")
-    cur = conn.cursor()
+    c = conn.cursor()
 
-    cur.execute(
-        "SELECT * FROM users WHERE username=? AND password=?",
-        (username,password)
-    )
-
-    user = cur.fetchone()
+    c.execute("SELECT * FROM users WHERE username=? AND password=?",
+              (username,password))
+    user = c.fetchone()
 
     conn.close()
 
     if user:
-        return jsonify({"message":"Login successful"})
+        session["user"]=username
+        return jsonify({"status":"success"})
     else:
-        return jsonify({"message":"Invalid username or password"}),401
+        return jsonify({"status":"fail"})
 
 
-# -----------------------
-# PLANT IDENTIFICATION
-# -----------------------
+# ---------- PLANT IDENTIFICATION ----------
 
-@app.route("/identify", methods=["POST"])
-def identify():
+@app.route("/predict", methods=["POST"])
+def predict():
 
-    if "image" not in request.files:
-        return jsonify({"error":"No image uploaded"})
+    if "user" not in session:
+        return jsonify({"error":"login required"})
 
-    image = request.files["image"]
+    file = request.files["image"]
+    filename = secure_filename(file.filename)
 
-    files = {
-        "images": (image.filename, image.stream, image.mimetype)
-    }
+    path = os.path.join(UPLOAD_FOLDER, filename)
+    file.save(path)
 
-    data = {"organs":"leaf"}
+    # ----- PlantNet API -----
 
-    url = f"https://my-api.plantnet.org/v2/identify/all?api-key={API_KEY}"
+    url = f"https://my-api.plantnet.org/v2/identify/all?api-key={PLANTNET_API_KEY}"
+
+    files = {"images": open(path,"rb")}
+    data = {"organs":["leaf"]}
+
+    response = requests.post(url, files=files, data=data)
+    result = response.json()
 
     try:
-
-        response = requests.post(url, files=files, data=data)
-        result = response.json()
-
-        plant = result["results"][0]
-
-        scientific = plant["species"]["scientificNameWithoutAuthor"]
-
-        description = plant["species"]["genus"]["scientificName"]
-
-        uses = """
-Leaves: Used in herbal medicine  
-Roots: Used in traditional remedies  
-Bark: Anti-inflammatory properties
-"""
-
-        return jsonify({
-            "scientific":scientific,
-            "description":description,
-            "uses":uses
-        })
-
+        plant = result["results"][0]["species"]["scientificNameWithoutAuthor"]
     except:
-        return jsonify({"error":"Plant not identified"})
+        plant = "Unknown plant"
+
+    # ----- Wikipedia description -----
+
+    wiki = requests.get(
+        f"https://en.wikipedia.org/api/rest_v1/page/summary/{plant}"
+    ).json()
+
+    description = wiki.get("extract","No description available.")
+
+    medicinal = "Medicinal uses vary. Consult botanical sources."
+
+    return jsonify({
+        "name":plant,
+        "description":description,
+        "medicinal":medicinal
+    })
 
 
-# -----------------------
+# ---------------- RUN ----------------
 
 if __name__ == "__main__":
     app.run(debug=True)
